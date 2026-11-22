@@ -26,7 +26,9 @@ jobs:
           - arch: aarch64
             runner: ubuntu-26.04-arm
     runs-on: ${{ matrix.runner }}
-    container: almalinux:9
+    container:
+      image: almalinux:9
+      options: --privileged
     steps:
       - name: Install build tooling
         run: |
@@ -41,11 +43,11 @@ jobs:
         run: spectool -g -C SOURCES SPECS/ocserv.spec
 
       - name: Install build dependencies
-        run: dnf -y builddep SPECS/ocserv.spec
+        run: dnf -y builddep --define '_with_root_tests 1' SPECS/ocserv.spec
 
-      - name: Build (runs %check)
+      - name: Build (runs the full %check, including root tests)
         run: |
-          rpmbuild -ba \
+          rpmbuild -ba --with root_tests \
             --define "_topdir $PWD/rpmbuild" \
             --define "_sourcedir $PWD/SOURCES" \
             SPECS/ocserv.spec
@@ -71,43 +73,6 @@ jobs:
             rpmbuild/RPMS/*/*.rpm
             rpmbuild/SRPMS/*.src.rpm
           if-no-files-found: error
-
-  full-tests:
-    name: el9 ${{ matrix.arch }} (root tests)
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-26.04
-          - arch: aarch64
-            runner: ubuntu-26.04-arm
-    runs-on: ${{ matrix.runner }}
-    container:
-      image: almalinux:9
-      options: --privileged
-    steps:
-      - name: Install build tooling
-        run: |
-          dnf -y install epel-release dnf-plugins-core
-          dnf config-manager --set-enabled crb
-          dnf -y install rpm-build rpmdevtools git-core
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: spectool -g -C SOURCES SPECS/ocserv.spec
-      - run: dnf -y builddep --define '_with_root_tests 1' SPECS/ocserv.spec
-      - name: Build with root tests
-        run: |
-          rpmbuild -bb --with root_tests \
-            --define "_topdir $PWD/rpmbuild" \
-            --define "_sourcedir $PWD/SOURCES" \
-            SPECS/ocserv.spec
-      - if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: testlog-full-${{ matrix.arch }}
-          path: rpmbuild/BUILD/*/*/meson-logs/testlog.txt
-          if-no-files-found: ignore
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
