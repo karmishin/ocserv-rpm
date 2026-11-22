@@ -72,6 +72,9 @@ BuildRequires:	pam_wrapper, nss_wrapper
 # test-replay and haproxy-proxyproto* skip without these, but when run as
 # root they need netns + tun, so only pull them in for privileged builds
 BuildRequires:	tcpdump, haproxy, vim-common
+# radius* need a RADIUS server (radiusd), test-year-2038 needs faketime,
+# ac-aes*-gcm-cipher check the openconnect version through pkg-config
+BuildRequires:	freeradius, libfaketime, openconnect-devel
 %endif
 BuildRequires:	uid_wrapper
 # Fedora skips socket_wrapper on aarch64 (seccomp concerns); on EL9 the full
