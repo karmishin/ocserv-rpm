@@ -5,10 +5,13 @@ AlmaLinux / Rocky / RHEL 9, for x86_64 and aarch64.
 
 ## Install
 
-Download the RPM for your architecture from the
-[Releases](../../releases) page, check it against `SHA256SUMS`, then:
+Download the RPM for your architecture and `RPM-GPG-KEY-ocserv` from the
+[Releases](../../releases) page.
 
 ```bash
+gpg --show-keys RPM-GPG-KEY-ocserv
+rpm --import RPM-GPG-KEY-ocserv
+rpm -K ocserv-1.6.0-1.1.el9.$(uname -m).rpm
 dnf install -y epel-release
 dnf install -y ./ocserv-1.6.0-1.1.el9.$(uname -m).rpm
 ```
@@ -19,9 +22,9 @@ To keep EPEL's older ocserv from replacing this build:
 dnf config-manager --save --setopt=epel.excludepkgs=ocserv
 ```
 
-## What's different from Fedora's spec
+## Differences from Fedora's spec
 
-The starting point is
+This package is based on 
 [Fedora rawhide's meson spec](https://src.fedoraproject.org/rpms/ocserv/blob/19aceb80f8e603abe2606394646dd6d52fc71c2d/f/ocserv.spec).
 - OIDC auth enabled
 - Bundled `llhttp`
@@ -36,8 +39,6 @@ The starting point is
 
 ## Building
 
-On an EL9 machine:
-
 ```bash
 dnf install -y epel-release dnf-plugins-core rpm-build rpmdevtools
 dnf config-manager --set-enabled crb
@@ -45,11 +46,3 @@ spectool -g -C SOURCES SPECS/ocserv.spec
 dnf builddep -y SPECS/ocserv.spec
 rpmbuild -ba --define "_sourcedir $PWD/SOURCES" SPECS/ocserv.spec
 ```
-
-Build options:
-
-| Option | Effect |
-| --- | --- |
-| `--without check` | skip the test suite |
-| `--without oidc` | build without OpenID Connect support |
-| `--with root_tests` | also run the tests that need root, network namespaces and a tun device |

@@ -74,9 +74,69 @@ jobs:
             rpmbuild/SRPMS/*.src.rpm
           if-no-files-found: error
 
-  release:
+  sign:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: rpm
+    runs-on: ubuntu-26.04
+    container: almalinux:9
+    environment: release
+    steps:
+      - name: Install signing tools
+        run: dnf -y install rpm-sign gnupg2 git-core
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rpms-*
+          path: artifacts
+
+      - name: Collect RPMs
+        run: |
+          mkdir out
+          find artifacts -name '*.rpm' ! -name '*.src.rpm' -exec cp {} out/ \;
+          cp "$(find artifacts -name '*.src.rpm' | head -1)" out/
+          ls -l out
+
+      - name: Check tag matches the spec's version-release
+        run: |
+          vr=$(rpm -qp --qf '%{VERSION}-%{RELEASE}' out/ocserv-[0-9]*.x86_64.rpm)
+          vr="${vr%.el*}"
+          test "${GITHUB_REF_NAME}" = "v${vr}" || {
+            echo "tag ${GITHUB_REF_NAME} != v${vr} from the spec"; exit 1; }
+
+      - name: Sign RPMs
+        env:
+          RPM_SIGNING_KEY: ${{ secrets.RPM_SIGNING_KEY }}
+          RPM_SIGNING_FPR: ${{ vars.RPM_SIGNING_FPR }}
+        run: |
+          export GNUPGHOME="$(mktemp -d)"
+          trap 'gpgconf --kill gpg-agent; rm -rf "$GNUPGHOME"' EXIT
+          printf '%s\n' "$RPM_SIGNING_KEY" | gpg --batch --import
+          committed=$(gpg --show-keys --with-colons RPM-GPG-KEY-ocserv | awk -F: '/^fpr/ {print $10; exit}')
+          test "$committed" = "$RPM_SIGNING_FPR" || {
+            echo "RPM-GPG-KEY-ocserv ($committed) is not the signing key ($RPM_SIGNING_FPR)"; exit 1; }
+          rpmsign --addsign \
+            --define "_gpg_name $RPM_SIGNING_FPR" \
+            --define "_gpg_sign_cmd_extra_args --batch --pinentry-mode loopback" \
+            out/*.rpm
+
+      - name: Verify signatures against the committed public key
+        run: |
+          rpm --import RPM-GPG-KEY-ocserv
+          for f in out/*.rpm; do
+            rpm -K "$f"
+            rpm -K "$f" | grep -q 'digests signatures OK$'
+          done
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signed
+          path: out/*.rpm
+          if-no-files-found: error
+
+  release:
+    needs: sign
     runs-on: ubuntu-26.04
     permissions:
       contents: write
@@ -85,28 +145,30 @@ jobs:
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          pattern: rpms-*
-          path: artifacts
+          name: signed
+          path: out
 
-      - name: Collect files
+      - name: Checksums and public key
         run: |
-          mkdir out
-          # The SRPM is identical across arches; keep a single copy.
-          find artifacts -name '*.rpm' ! -name '*.src.rpm' -exec cp {} out/ \;
-          cp "$(find artifacts -name '*.src.rpm' | head -1)" out/
           (cd out && sha256sum *.rpm > SHA256SUMS)
+          cp RPM-GPG-KEY-ocserv out/
           ls -l out
 
-      - name: Check tag matches the spec's version-release
+      - name: Write release notes
         run: |
-          rpm_vr=$(ls out/ocserv-[0-9]*.x86_64.rpm | sed -E 's#.*/ocserv-(.*)\.el9\.x86_64\.rpm#\1#')
-          test "${GITHUB_REF_NAME}" = "v${rpm_vr}" || {
-            echo "tag ${GITHUB_REF_NAME} != v${rpm_vr} from the spec"; exit 1; }
+          upstream="${GITHUB_REF_NAME#v}"; upstream="${upstream%-*}"
+          {
+            awk '/^%changelog/ {c=1; next}
+                 c && /^\*/ {n++; next}
+                 n == 1 && /^$/ {exit}
+                 n == 1' SPECS/ocserv.spec
+            echo
+            echo "Upstream changes: [ocserv ${upstream} NEWS](https://gitlab.com/openconnect/ocserv/-/blob/${upstream}/NEWS)."
+            echo "Installation: see the [README](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#install)."
+          } > notes.md
+          cat notes.md
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release create "${GITHUB_REF_NAME}" out/* \
-            --title "ocserv ${GITHUB_REF_NAME#v} for EL9" \
-            --notes "Built from \`SPECS/ocserv.spec\` at ${GITHUB_SHA::7} on AlmaLinux 9 (x86_64 + aarch64). Install: \`dnf install epel-release && dnf install ./ocserv-[0-9]*.el9.\$(uname -m).rpm\`. Verify downloads against SHA256SUMS."
+        run: gh release create "${GITHUB_REF_NAME}" out/* --notes-file notes.md
