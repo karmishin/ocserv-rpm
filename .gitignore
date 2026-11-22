@@ -1,0 +1,3 @@
+SOURCES/ocserv-*.tar.xz
+SOURCES/ocserv-*.tar.xz.sig
+rpmbuild/

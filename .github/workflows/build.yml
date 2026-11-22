@@ -1,0 +1,147 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rpm:
+    name: el9 ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: aarch64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    container: almalinux:9
+    steps:
+      - name: Install build tooling
+        run: |
+          dnf -y install epel-release dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y install rpm-build rpmdevtools git-core
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Fetch upstream tarball and signature
+        # %prep verifies the signature against the upstream keys in SOURCES/
+        run: spectool -g -C SOURCES SPECS/ocserv.spec
+
+      - name: Install build dependencies
+        run: dnf -y builddep SPECS/ocserv.spec
+
+      - name: Build (runs %check)
+        run: |
+          rpmbuild -ba \
+            --define "_topdir $PWD/rpmbuild" \
+            --define "_sourcedir $PWD/SOURCES" \
+            SPECS/ocserv.spec
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: testlog-${{ matrix.arch }}
+          path: rpmbuild/BUILD/*/*/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+      - name: Install-test the built RPM
+        run: |
+          dnf -y install $(ls rpmbuild/RPMS/*/ocserv-[0-9]*.rpm)
+          ocserv --version 2>&1 | grep -E '^Compiled with: .*oidc_auth'
+          rpm -V ocserv
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rpms-${{ matrix.arch }}
+          path: |
+            rpmbuild/RPMS/*/*.rpm
+            rpmbuild/SRPMS/*.src.rpm
+          if-no-files-found: error
+
+  full-tests:
+    name: el9 ${{ matrix.arch }} (root tests)
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-26.04
+          - arch: aarch64
+            runner: ubuntu-26.04-arm
+    runs-on: ${{ matrix.runner }}
+    container:
+      image: almalinux:9
+      options: --privileged
+    steps:
+      - name: Install build tooling
+        run: |
+          dnf -y install epel-release dnf-plugins-core
+          dnf config-manager --set-enabled crb
+          dnf -y install rpm-build rpmdevtools git-core
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: spectool -g -C SOURCES SPECS/ocserv.spec
+      - run: dnf -y builddep --define '_with_root_tests 1' SPECS/ocserv.spec
+      - name: Build with root tests
+        run: |
+          rpmbuild -bb --with root_tests \
+            --define "_topdir $PWD/rpmbuild" \
+            --define "_sourcedir $PWD/SOURCES" \
+            SPECS/ocserv.spec
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: testlog-full-${{ matrix.arch }}
+          path: rpmbuild/BUILD/*/*/meson-logs/testlog.txt
+          if-no-files-found: ignore
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: rpm
+    runs-on: ubuntu-26.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: rpms-*
+          path: artifacts
+
+      - name: Collect files
+        run: |
+          mkdir out
+          # The SRPM is identical across arches; keep a single copy.
+          find artifacts -name '*.rpm' ! -name '*.src.rpm' -exec cp {} out/ \;
+          cp "$(find artifacts -name '*.src.rpm' | head -1)" out/
+          (cd out && sha256sum *.rpm > SHA256SUMS)
+          ls -l out
+
+      - name: Check tag matches the spec's version-release
+        run: |
+          rpm_vr=$(ls out/ocserv-[0-9]*.x86_64.rpm | sed -E 's#.*/ocserv-(.*)\.el9\.x86_64\.rpm#\1#')
+          test "${GITHUB_REF_NAME}" = "v${rpm_vr}" || {
+            echo "tag ${GITHUB_REF_NAME} != v${rpm_vr} from the spec"; exit 1; }
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" out/* \
+            --title "ocserv ${GITHUB_REF_NAME#v} for EL9" \
+            --notes "Built from \`SPECS/ocserv.spec\` at ${GITHUB_SHA::7} on AlmaLinux 9 (x86_64 + aarch64). Install: \`dnf install epel-release && dnf install ./ocserv-[0-9]*.el9.\$(uname -m).rpm\`. Verify downloads against SHA256SUMS."
