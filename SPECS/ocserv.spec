@@ -200,10 +200,8 @@ mkdir -p %{_sysconfdir}/pki/ocserv/cacerts
 
 %changelog
 * Sun Nov 22 2026 Mikhail Karmishin <mikhail@karmishin.com> - 1.6.0-1.1
-- Update to 1.6.0 for EL9 (EPEL 9 is still on 1.4.1)
-- Includes 1.5.0 security fixes: unauthenticated heap overflow via
-  oversized webvpncontext cookie (#719), DTLS MTU integer underflow (#717)
-- Port Fedora's meson-based spec to EL9; enable OIDC auth
-- Drop pam-guard-page.patch (upstream); add syslog-shim __syslog_chk test fix
+- Update to 1.6.0 for EL9
+- Enable OIDC auth
+- Drop pam-guard-page.patch (upstream)
 - Use socket_wrapper on aarch64 too
-- Use the bundled llhttp 9.4.1 instead of EPEL's 9.2.1
+- Use the bundled llhttp 9.4.1
